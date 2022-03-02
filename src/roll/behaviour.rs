@@ -1,68 +1,31 @@
-use {crate::dice::Dice, rand::RngCore, std::iter::Iterator};
+use {
+    crate::{
+        dice::Dice,
+        roll::value::{Action, ExType, Value},
+    },
+    rand::RngCore,
+    std::{iter::Iterator, ops::RangeInclusive},
+};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Action {
-    Discard,
-    Reroll(u8),
-    Explode(u8, ExType),
-    Failure,
-    Success,
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
+pub enum DiscardDirection {
+    High,
+    Low,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct Value {
-    value: u8,
-    actions: Vec<Action>,
-}
-
-impl Value {
-    pub fn new(value: u8) -> Self {
-        Self {
-            value,
-            actions: Vec::new(),
-        }
-    }
-
-    pub fn value(&self) -> u8 {
-        self.value
-    }
-
-    fn add(mut self, action: Action) -> Self {
-        self.actions.push(action);
-        self
-    }
-
-    fn update(mut self, value: u8, action: Action) -> Self {
-        self.value = value;
-        self.actions.push(action);
-        self
-    }
-
-    pub fn text(&self, dice: &Dice) -> String {
-        dice.text(self.value())
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
 pub enum DiscardType {
-    Keep,
-    Drop,
+    Keep(DiscardDirection),
+    Drop(DiscardDirection),
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum ExType {
-    Standard,
-    Compound,
-    Penetrating,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
 pub enum Behaviour {
-    Keep(usize),
-    Drop(usize),
-    Reroll(Option<u8>, bool),
-    Explode(Option<u8>, ExType),
-    Critical(Option<u8>, Option<u8>),
+    Reroll(Option<i8>, bool),
+    Explode(Option<i8>, ExType),
+    Critical(Option<i8>, Option<i8>),
+    Keep(usize, DiscardDirection),
+    Drop(usize, DiscardDirection),
 }
 
 impl Behaviour {
@@ -73,30 +36,60 @@ impl Behaviour {
         rng: &mut dyn RngCore,
     ) -> Vec<Value> {
         match behaviour {
-            Self::Keep(number) => Self::apply_discard(number, DiscardType::Keep, values),
-            Self::Drop(number) => Self::apply_discard(number, DiscardType::Drop, values),
+            Self::Keep(number, direction) => {
+                Self::apply_discard(number, DiscardType::Keep(direction), values)
+            }
+            Self::Drop(number, direction) => {
+                Self::apply_discard(number, DiscardType::Drop(direction), values)
+            }
             Self::Reroll(point, repeat) => Self::apply_reroll(point, repeat, dice, values, rng),
             Self::Explode(point, explode) => Self::apply_explode(point, explode, dice, values, rng),
             Self::Critical(failure, success) => {
                 Self::apply_critical(failure, success, dice, values)
             }
-            _ => values,
         }
     }
 
+    pub fn apply_all(
+        behaviours: Vec<Behaviour>,
+        dice: &Dice,
+        values: Vec<Value>,
+        rng: &mut dyn RngCore,
+    ) -> Vec<Value> {
+        let mut values = values;
+        let mut behaviours = behaviours;
+        behaviours.sort_unstable();
+        for behaviour in behaviours {
+            values = Self::apply(behaviour, dice, values, rng);
+        }
+        values
+    }
+
+    fn failure(dice: &Dice, point: &Option<i8>) -> Option<RangeInclusive<i8>> {
+        point
+            .map(|p| *dice.faces().start()..=p)
+            .or_else(|| dice.start())
+    }
+
+    fn success(dice: &Dice, point: &Option<i8>) -> Option<RangeInclusive<i8>> {
+        point
+            .map(|p| p..=*dice.faces().end())
+            .or_else(|| dice.end())
+    }
+
     fn apply_reroll(
-        point: Option<u8>,
+        point: Option<i8>,
         repeat: bool,
         dice: &Dice,
         values: Vec<Value>,
         rng: &mut dyn RngCore,
     ) -> Vec<Value> {
-        if let Some(p) = point.or(dice.failure()) {
+        if let Some(range) = Self::failure(dice, &point) {
             let mut result = Vec::new();
             for value in values {
                 let mut v = value;
-                while v.value <= p {
-                    v = v.clone().update(dice.roll(rng), Action::Reroll(v.value));
+                while range.contains(&v.value()) {
+                    v = v.clone().update(dice.roll(rng), Action::Reroll(v.value()));
                     if !repeat {
                         break;
                     }
@@ -110,36 +103,46 @@ impl Behaviour {
     }
 
     fn apply_critical(
-        failure: Option<u8>,
-        success: Option<u8>,
+        failure: Option<i8>,
+        success: Option<i8>,
         dice: &Dice,
         values: Vec<Value>,
     ) -> Vec<Value> {
-        let failure = failure.or(dice.failure());
-        let success = success.or(dice.success());
         let mut result = Vec::new();
         for value in values {
-            result.push(if failure.is_some() && value.value <= failure.unwrap() {
-                value.add(Action::Failure)
-            } else if success.is_some() && value.value >= success.unwrap() {
-                value.add(Action::Success)
-            } else {
-                value
-            });
+            result.push(
+                match (Self::failure(dice, &failure), Self::success(dice, &success)) {
+                    (Some(v), _) if v.contains(&value.value()) => value.add(Action::Failure),
+                    (_, Some(v)) if v.contains(&value.value()) => value.add(Action::Success),
+                    _ => value,
+                },
+            );
         }
         result
     }
 
     fn apply_discard(number: usize, discard: DiscardType, values: Vec<Value>) -> Vec<Value> {
-        let mut numbers: Vec<u8> = values.iter().map(|v| v.value).collect();
+        let mut numbers: Vec<i8> = values
+            .iter()
+            .filter(|v| !v.actions().contains(&Action::Discard))
+            .map(|v| v.value())
+            .collect();
         numbers.sort_unstable();
-        if discard == DiscardType::Drop {
+        if let DiscardType::Drop(DiscardDirection::High)
+        | DiscardType::Keep(DiscardDirection::High) = discard
+        {
             numbers.reverse();
         }
-        let mut discards = numbers[0..number].to_vec();
+        let mut discards = if let DiscardType::Drop(_) = discard {
+            numbers[..number].to_vec()
+        } else {
+            numbers[number..].to_vec()
+        };
         let mut results = Vec::new();
         for value in values {
-            results.push(if let Ok(index) = discards.binary_search(&value.value) {
+            results.push(if value.actions().contains(&Action::Discard) {
+                value
+            } else if let Ok(index) = discards.binary_search(&value.value()) {
                 discards.remove(index);
                 value.add(Action::Discard)
             } else {
@@ -150,28 +153,36 @@ impl Behaviour {
     }
 
     fn apply_explode(
-        point: Option<u8>,
+        point: Option<i8>,
         explode: ExType,
         dice: &Dice,
         values: Vec<Value>,
         rng: &mut dyn RngCore,
     ) -> Vec<Value> {
-        if let Some(p) = point.or(dice.success()) {
+        if let Some(range) = Self::success(dice, &point) {
             let mut result = Vec::new();
             for value in values {
+                let mut first = true;
                 let mut v = value;
-                while v.value >= p {
-                    let mut r = dice.roll(rng);
+                let mut r = v.value();
+                while range.contains(&r) {
+                    r = dice.roll(rng);
                     v = match explode {
-                        ExType::Standard => v.clone().update(r, Action::Explode(v.value, explode)),
+                        ExType::Standard => {
+                            v.clone().update(r, Action::Explode(v.value(), explode))
+                        }
                         ExType::Penetrating => {
-                            r -= 1;
-                            v.clone().update(r, Action::Explode(v.value, explode))
+                            r = (r - 1).max(*dice.faces().start());
+                            v.clone().update(r, Action::Explode(v.value(), explode))
                         }
                         ExType::Compound => {
-                            v.clone().update(v.value + r, Action::Explode(r, explode))
+                            if first {
+                                v = v.clone().add(Action::Explode(v.value(), explode));
+                            }
+                            v.clone().update(v.value() + r, Action::Explode(r, explode))
                         }
                     };
+                    first = false;
                 }
                 result.push(v);
             }
@@ -188,69 +199,71 @@ mod test {
 
     #[test]
     fn check_apply_critical() {
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
         let result = Behaviour::apply_critical(None, None, &Dice::D6, values);
 
-        assert_eq!(result.len(), 6);
-        let actions = action(&result);
-        assert_eq!(actions[0], Some(&Action::Failure));
-        assert_eq!(actions[1], None);
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], None);
-        assert_eq!(actions[5], Some(&Action::Success));
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Failure),
+                None,
+                None,
+                None,
+                None,
+                Some(Action::Success)
+            ]
+        );
     }
 
     #[test]
     fn check_apply_critical_override() {
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
-        let result = Behaviour::apply_critical(Some(1), Some(4), &Dice::D6, values);
+        let result = Behaviour::apply_critical(Some(2), Some(5), &Dice::D6, values);
 
-        assert_eq!(result.len(), 6);
-        let actions = action(&result);
-        assert_eq!(actions[0], Some(&Action::Failure));
-        assert_eq!(actions[1], Some(&Action::Failure));
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], Some(&Action::Success));
-        assert_eq!(actions[5], Some(&Action::Success));
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Failure),
+                Some(Action::Failure),
+                None,
+                None,
+                Some(Action::Success),
+                Some(Action::Success)
+            ]
+        );
     }
 
     #[test]
     fn check_apply_reroll_once() {
         let mut rng = rng(Dice::D6, 1);
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
         let result = Behaviour::apply_reroll(None, false, &Dice::D6, values, &mut rng);
 
         assert_eq!(result.len(), 6);
-        assert_eq!(result[0].value(), 1);
+        assert_eq!(result[0].value(), 2);
 
-        let actions = action(&result);
-        assert_eq!(actions[0], Some(&Action::Reroll(0)));
-        assert_eq!(actions[1], None);
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], None);
-        assert_eq!(actions[5], None);
+        assert_eq!(
+            action(&result),
+            vec![Some(Action::Reroll(1)), None, None, None, None, None,]
+        );
     }
 
     #[test]
     fn check_apply_reroll() {
         let mut rng = rng(Dice::D6, 0);
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
         let result = Behaviour::apply_reroll(None, true, &Dice::D6, values, &mut rng);
 
         assert_eq!(result.len(), 6);
-        assert_eq!(result[0].value(), 1);
+        assert_eq!(result[0].value(), 2);
 
         let actions = actions(&result);
-        assert_eq!(actions[0].len(), 2);
-        assert_eq!(actions[0][0], Action::Reroll(0));
-        assert_eq!(actions[0][1], Action::Reroll(0));
+
+        assert_eq!(actions[0], vec![Action::Reroll(1), Action::Reroll(1)]);
         assert!(actions[1].is_empty());
         assert!(actions[2].is_empty());
         assert!(actions[3].is_empty());
@@ -259,62 +272,130 @@ mod test {
     }
 
     #[test]
-    fn check_apply_discard_keep() {
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+    fn check_apply_discard_keep_high() {
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
-        let result = Behaviour::apply_discard(2, DiscardType::Keep, values);
+        let result = Behaviour::apply_discard(4, DiscardType::Keep(DiscardDirection::High), values);
 
-        assert_eq!(result.len(), 6);
-        let actions = action(&result);
-        assert_eq!(actions[0], Some(&Action::Discard));
-        assert_eq!(actions[1], Some(&Action::Discard));
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], None);
-        assert_eq!(actions[5], None);
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Discard),
+                Some(Action::Discard),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply_discard_keep_low() {
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result = Behaviour::apply_discard(4, DiscardType::Keep(DiscardDirection::Low), values);
+
+        assert_eq!(
+            action(&result),
+            vec![
+                None,
+                None,
+                None,
+                None,
+                Some(Action::Discard),
+                Some(Action::Discard),
+            ]
+        );
     }
 
     #[test]
     fn check_apply_discard_keep_duplicates() {
         let values = values(vec![2, 2, 2, 2, 4, 5]);
 
-        let result = Behaviour::apply_discard(2, DiscardType::Keep, values);
+        let result = Behaviour::apply_discard(4, DiscardType::Keep(DiscardDirection::High), values);
 
-        assert_eq!(result.len(), 6);
-        let actions = action(&result);
-        assert_eq!(actions[0], Some(&Action::Discard));
-        assert_eq!(actions[1], Some(&Action::Discard));
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], None);
-        assert_eq!(actions[5], None);
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Discard),
+                Some(Action::Discard),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
     }
 
     #[test]
-    fn check_apply_discard_drop() {
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+    fn check_apply_discard_drop_low() {
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
-        let result = Behaviour::apply_discard(2, DiscardType::Drop, values);
+        let result = Behaviour::apply_discard(2, DiscardType::Drop(DiscardDirection::Low), values);
 
-        assert_eq!(result.len(), 6);
-        let actions = action(&result);
-        assert_eq!(actions[0], None);
-        assert_eq!(actions[1], None);
-        assert_eq!(actions[2], None);
-        assert_eq!(actions[3], None);
-        assert_eq!(actions[4], Some(&Action::Discard));
-        assert_eq!(actions[5], Some(&Action::Discard));
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Discard),
+                Some(Action::Discard),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply_discard_drop_high() {
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result = Behaviour::apply_discard(2, DiscardType::Drop(DiscardDirection::High), values);
+
+        assert_eq!(
+            action(&result),
+            vec![
+                None,
+                None,
+                None,
+                None,
+                Some(Action::Discard),
+                Some(Action::Discard),
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply_discard_overlap() {
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let mut result =
+            Behaviour::apply_discard(2, DiscardType::Drop(DiscardDirection::High), values);
+        result = Behaviour::apply_discard(2, DiscardType::Drop(DiscardDirection::High), result);
+
+        assert_eq!(
+            action(&result),
+            vec![
+                None,
+                None,
+                Some(Action::Discard),
+                Some(Action::Discard),
+                Some(Action::Discard),
+                Some(Action::Discard),
+            ]
+        );
     }
 
     #[test]
     fn check_apply_explode_standard() {
         let mut rng = rng(Dice::D6, 5);
-        let values = values(vec![0, 1, 2, 3, 4, 5]);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
 
         let result = Behaviour::apply_explode(None, ExType::Standard, &Dice::D6, values, &mut rng);
 
         assert_eq!(result.len(), 6);
-        assert_eq!(result[5].value(), 0);
+        assert_eq!(result[5].value(), 1);
 
         let actions = actions(&result);
         assert!(actions[0].is_empty());
@@ -322,20 +403,153 @@ mod test {
         assert!(actions[2].is_empty());
         assert!(actions[3].is_empty());
         assert!(actions[4].is_empty());
-        assert_eq!(actions[5].len(), 2);
-        assert_eq!(actions[5][0], Action::Explode(5, ExType::Standard));
-        assert_eq!(actions[5][1], Action::Explode(5, ExType::Standard));
+
+        assert_eq!(
+            actions[5],
+            vec![
+                Action::Explode(6, ExType::Standard),
+                Action::Explode(6, ExType::Standard)
+            ]
+        );
     }
 
-    fn values(values: Vec<u8>) -> Vec<Value> {
+    #[test]
+    fn check_apply_explode_compound() {
+        let mut rng = rng(Dice::D6, 5);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result = Behaviour::apply_explode(None, ExType::Compound, &Dice::D6, values, &mut rng);
+
+        assert_eq!(result.len(), 6);
+        assert_eq!(result[5].value(), 13);
+
+        let actions = actions(&result);
+        assert!(actions[0].is_empty());
+        assert!(actions[1].is_empty());
+        assert!(actions[2].is_empty());
+        assert!(actions[3].is_empty());
+        assert!(actions[4].is_empty());
+        assert_eq!(
+            actions[5],
+            vec![
+                Action::Explode(6, ExType::Compound),
+                Action::Explode(6, ExType::Compound),
+                Action::Explode(1, ExType::Compound)
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply_explode_pentrating() {
+        let mut rng = rng(Dice::D6, 5);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result =
+            Behaviour::apply_explode(None, ExType::Penetrating, &Dice::D6, values, &mut rng);
+
+        assert_eq!(result.len(), 6);
+        assert_eq!(result[5].value(), 5);
+
+        let actions = actions(&result);
+        assert!(actions[0].is_empty());
+        assert!(actions[1].is_empty());
+        assert!(actions[2].is_empty());
+        assert!(actions[3].is_empty());
+        assert!(actions[4].is_empty());
+        assert_eq!(actions[5], vec![Action::Explode(6, ExType::Penetrating)]);
+    }
+
+    #[test]
+    fn check_behaviour_ordering() {
+        let mut v = vec![
+            Behaviour::Reroll(Some(1), true),
+            Behaviour::Critical(None, None),
+            Behaviour::Drop(1, DiscardDirection::Low),
+            Behaviour::Explode(None, ExType::Penetrating),
+            Behaviour::Keep(2, DiscardDirection::High),
+            Behaviour::Reroll(None, false),
+        ];
+        v.sort();
+
+        assert_eq!(
+            v,
+            vec![
+                Behaviour::Reroll(None, false),
+                Behaviour::Reroll(Some(1), true),
+                Behaviour::Explode(None, ExType::Penetrating),
+                Behaviour::Critical(None, None),
+                Behaviour::Keep(2, DiscardDirection::High),
+                Behaviour::Drop(1, DiscardDirection::Low),
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply() {
+        let mut rng = rng(Dice::D6, 5);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result = Behaviour::apply(
+            Behaviour::Drop(2, DiscardDirection::High),
+            &Dice::D6,
+            values,
+            &mut rng,
+        );
+
+        assert_eq!(
+            action(&result),
+            vec![
+                None,
+                None,
+                None,
+                None,
+                Some(Action::Discard),
+                Some(Action::Discard),
+            ]
+        );
+    }
+
+    #[test]
+    fn check_apply_all() {
+        let mut rng = rng(Dice::D6, 5);
+        let values = values(vec![1, 2, 3, 4, 5, 6]);
+
+        let result = Behaviour::apply_all(
+            vec![
+                Behaviour::Keep(4, DiscardDirection::High),
+                Behaviour::Drop(2, DiscardDirection::High),
+            ],
+            &Dice::D6,
+            values,
+            &mut rng,
+        );
+
+        assert_eq!(
+            action(&result),
+            vec![
+                Some(Action::Discard),
+                Some(Action::Discard),
+                None,
+                None,
+                Some(Action::Discard),
+                Some(Action::Discard),
+            ]
+        );
+    }
+
+    fn values(values: Vec<i8>) -> Vec<Value> {
         values.iter().map(|v| Value::new(*v)).collect()
     }
 
-    fn action<'a>(values: &'a Vec<Value>) -> Vec<Option<&Action>> {
-        values.iter().map(|v| v.actions.get(0)).collect()
+    fn action<'a>(values: &'a Vec<Value>) -> Vec<Option<Action>> {
+        values
+            .iter()
+            .filter(|v| v.actions().len() < 2)
+            .map(|v| v.actions().get(0).map(|v| *v).or(None))
+            .collect()
     }
 
     fn actions<'a>(values: &'a Vec<Value>) -> Vec<Vec<Action>> {
-        values.iter().map(|v| v.actions.clone()).collect()
+        values.iter().map(|v| v.actions().clone()).collect()
     }
 }

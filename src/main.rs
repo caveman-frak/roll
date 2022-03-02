@@ -5,25 +5,30 @@ mod roll;
 use {
     crate::{
         dice::{Dice, Die},
-        roll::Roll,
+        roll::{
+            behaviour::{Behaviour, DiscardDirection},
+            value::ExType,
+            Roll,
+        },
     },
     rand::thread_rng,
 };
 
 fn main() {
-    println!(
-        "{}",
-        Roll::new(&Die::new(Dice::D10, 2), vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-    );
-
     let mut rng = thread_rng();
     for _ in 0..10 {
-        print!("{:?} ", Dice::D10.roll(&mut rng));
-    }
-    println!();
-    println!();
-    for _ in 0..10 {
-        print!("{:?} ", Die::new(Dice::D10, 2).roll(&mut rng));
+        println!(
+            "{} ",
+            Roll::from_roll(&Die::new(Dice::D10, 10), &mut rng).apply(
+                vec![
+                    // Behaviour::Reroll(None, false),
+                    // Behaviour::Explode(None, ExType::Standard),
+                    Behaviour::Critical(None, None),
+                    Behaviour::Drop(2, DiscardDirection::Low),
+                ],
+                &mut rng
+            )
+        );
     }
     println!();
 }

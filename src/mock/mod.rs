@@ -7,7 +7,8 @@ pub(crate) mod rng {
     };
 
     fn increment(dice: Dice) -> u64 {
-        1 + (u32::MAX / dice.faces() as u32) as u64
+        let length = 1 + (*dice.faces().end() - *dice.faces().start()) as u32;
+        1 + (u32::MAX / length) as u64
     }
 
     pub(crate) fn step_rng(dice: Dice, start: u64, step: u64) -> impl RngCore {
@@ -81,7 +82,7 @@ pub(crate) mod rng {
         fn print_dice_rng() {
             for dice in [D2, D3, D4, D6, D8, D10, D12, D20] {
                 println!(">>>>> {} ", dice);
-                for i in 0..dice.faces() {
+                for i in dice.faces() {
                     let mut rng = rng(dice, i as u64);
                     for _ in 0..30 {
                         print!("{:02} ", dice.roll(&mut rng));
@@ -95,7 +96,7 @@ pub(crate) mod rng {
         fn print_dice_rng_step() {
             for dice in [D6] {
                 println!(">>>>> Step {} ", dice);
-                for i in 0..dice.faces() {
+                for i in dice.faces() {
                     let mut rng = step_rng(dice, i as u64, 2);
                     for _ in 0..30 {
                         print!("{:02} ", dice.roll(&mut rng));
@@ -110,7 +111,7 @@ pub(crate) mod rng {
             for dice in [D6] {
                 println!(">>>>> Seq {} ", dice);
                 let v: Vec<u64> = vec![1, 2, 3, 4, 5, 6, 7];
-                for _ in 0..dice.faces() {
+                for _ in dice.faces() {
                     let mut rng = seq_rng(dice, v.iter().cloned());
                     for _ in 0..30 {
                         print!("{:02} ", dice.roll(&mut rng));

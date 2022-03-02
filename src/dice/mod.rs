@@ -3,6 +3,7 @@ use {
     anyhow::{Error, Result},
     std::{
         fmt::{self, Display},
+        ops::RangeInclusive,
         str::FromStr,
     },
 };
@@ -18,44 +19,56 @@ pub enum Dice {
     D12,
     D20,
     D100,
+    D00,
     Fate,
-    Other(u8),
+    Other(i8, i8),
 }
 
 impl Dice {
-    pub fn faces(&self) -> u8 {
+    pub fn faces(&self) -> RangeInclusive<i8> {
         match self {
-            Dice::D2 => 2,
-            Dice::D3 => 3,
-            Dice::D4 => 4,
-            Dice::D6 => 6,
-            Dice::D8 => 8,
-            Dice::D10 => 10,
-            Dice::D12 => 12,
-            Dice::D20 => 20,
-            Dice::D100 => 100,
-            Dice::Fate => 6,
-            Dice::Other(faces) => *faces,
+            Dice::D2 => 1..=2,
+            Dice::D3 => 1..=3,
+            Dice::D4 => 1..=4,
+            Dice::D6 => 1..=6,
+            Dice::D8 => 1..=8,
+            Dice::D10 => 1..=10,
+            Dice::D12 => 1..=12,
+            Dice::D20 => 1..=20,
+            Dice::D100 => 1..=100,
+            Dice::D00 => 0..=00,
+            Dice::Fate => -1..=1,
+            Dice::Other(start, end) => *start..=*end,
         }
     }
 
-    pub(crate) fn failure(&self) -> Option<u8> {
+    pub(crate) fn critical(&self) -> Option<i8> {
         match self {
-            Dice::D100 => Some(4),
+            Dice::D100 | Dice::D00 => Some(5),
             Dice::Fate => None,
-            _ => Some(0),
+            _ => Some(1),
         }
     }
 
-    pub(crate) fn success(&self) -> Option<u8> {
-        match self {
-            Dice::D100 => Some(95),
-            Dice::Fate => None,
-            _ => Some(self.faces() - 1),
+    pub(crate) fn start(&self) -> Option<RangeInclusive<i8>> {
+        if let Some(crit) = self.critical() {
+            let start = *self.faces().start();
+            Some(start..=(start + crit - 1))
+        } else {
+            None
         }
     }
 
-    pub(crate) fn text(&self, value: u8) -> String {
+    pub(crate) fn end(&self) -> Option<RangeInclusive<i8>> {
+        if let Some(crit) = self.critical() {
+            let end = *self.faces().end();
+            Some(end + 1 - crit..=end)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn text(&self, value: i8) -> String {
         let v = self.value(value);
         match self {
             Dice::Fate => match v {
@@ -64,8 +77,10 @@ impl Dice {
                 _ => String::from("0"),
             },
             _ => {
-                if self.faces() < 10 {
+                if self.faces().end() < &10 {
                     format!("{}", v)
+                } else if self.faces().end() > &99 {
+                    format!("{:03}", v)
                 } else {
                     format!("{:02}", v)
                 }
@@ -73,20 +88,12 @@ impl Dice {
         }
     }
 
-    fn value(&self, value: u8) -> i8 {
-        match self {
-            Dice::Fate => match value {
-                0 | 1 => -1,
-                4 | 5 => 1,
-                _ => 0,
-            },
-            Dice::D100 => value as i8,
-            _ => value as i8 + 1,
-        }
+    fn value(&self, value: i8) -> i8 {
+        value
     }
 
-    pub fn roll(&self, rng: &mut dyn RngCore) -> u8 {
-        rng.gen_range(0..self.faces())
+    pub fn roll(&self, rng: &mut dyn RngCore) -> i8 {
+        rng.gen_range(self.faces())
     }
 }
 
@@ -104,10 +111,11 @@ impl FromStr for Dice {
             "12" => Ok(Dice::D12),
             "20" => Ok(Dice::D20),
             "100" => Ok(Dice::D100),
-            "%" => Ok(Dice::D100),
+            "00" => Ok(Dice::D00),
+            "%" => Ok(Dice::D00),
             "Fate" => Ok(Dice::Fate),
             "F" => Ok(Dice::Fate),
-            _ => Ok(Dice::Other(s.parse()?)),
+            _ => Ok(Dice::Other(1, s.parse()?)),
         }
     }
 }
@@ -115,7 +123,7 @@ impl FromStr for Dice {
 impl Display for Dice {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Dice::Other(faces) => write!(f, "D{}", faces),
+            Dice::Other(_, end) => write!(f, "D{}", end),
             _ => write!(
                 f,
                 "{}",
@@ -128,6 +136,7 @@ impl Display for Dice {
                     Dice::D10 => "d10",
                     Dice::D12 => "d12",
                     Dice::D20 => "d20",
+                    Dice::D00 => "d00",
                     Dice::D100 => "d100",
                     Dice::Fate => "Fate",
                     _ => "",
@@ -152,8 +161,9 @@ impl Die {
         &self.dice
     }
 
-    pub fn roll(&self, rng: &mut dyn RngCore) -> Vec<u8> {
-        let range = Uniform::new(0, self.dice.faces());
+    pub fn roll(&self, rng: &mut dyn RngCore) -> Vec<i8> {
+        let faces = self.dice.faces();
+        let range = Uniform::new_inclusive(faces.start(), faces.end());
         rng.sample_iter(range).take(self.count as usize).collect()
     }
 }
@@ -191,12 +201,13 @@ mod test {
         assert_eq!("12".parse::<Dice>()?, Dice::D12);
         assert_eq!("20".parse::<Dice>()?, Dice::D20);
         assert_eq!("100".parse::<Dice>()?, Dice::D100);
-        assert_eq!("%".parse::<Dice>()?, Dice::D100);
+        assert_eq!("00".parse::<Dice>()?, Dice::D00);
+        assert_eq!("%".parse::<Dice>()?, Dice::D00);
         assert_eq!("F".parse::<Dice>()?, Dice::Fate);
         assert_eq!("Fate".parse::<Dice>()?, Dice::Fate);
 
-        assert!(matches!("1".parse::<Dice>()?, Dice::Other(1)));
-        assert!(matches!("5".parse::<Dice>()?, Dice::Other(5)));
+        assert!(matches!("1".parse::<Dice>()?, Dice::Other(1, 1)));
+        assert!(matches!("5".parse::<Dice>()?, Dice::Other(1, 5)));
 
         assert!(matches!("S".parse::<Dice>(), Err(_)));
 
@@ -205,26 +216,23 @@ mod test {
 
     #[test]
     fn check_d2_values() {
-        assert_eq!(Dice::D2.faces(), 2);
-        assert_eq!(Dice::D2.value(0), 1);
-        assert_eq!(Dice::D2.value(1), 2);
+        assert_eq!(Dice::D2.faces(), 1..=2);
+        assert_eq!(Dice::D2.text(1), "1");
+        assert_eq!(Dice::D2.text(2), "2");
 
-        assert_eq!(Dice::D2.failure(), Some(0));
-        assert_eq!(Dice::D2.success(), Some(1));
+        assert_eq!(Dice::D2.critical(), Some(1));
+        assert_eq!(Dice::D2.start(), Some(1..=1));
+        assert_eq!(Dice::D2.end(), Some(2..=2));
     }
 
     #[test]
     fn check_fate_dice_values() {
-        assert_eq!(Dice::Fate.faces(), 6);
-        assert_eq!(Dice::Fate.value(0), -1);
-        assert_eq!(Dice::Fate.value(1), -1);
-        assert_eq!(Dice::Fate.value(2), 0);
-        assert_eq!(Dice::Fate.value(3), 0);
-        assert_eq!(Dice::Fate.value(4), 1);
-        assert_eq!(Dice::Fate.value(5), 1);
+        assert_eq!(Dice::Fate.faces(), -1..=1);
+        assert_eq!(Dice::Fate.text(-1), "-");
+        assert_eq!(Dice::Fate.text(0), "0");
+        assert_eq!(Dice::Fate.text(1), "+");
 
-        assert_eq!(Dice::Fate.failure(), None);
-        assert_eq!(Dice::Fate.success(), None);
+        assert_eq!(Dice::Fate.critical(), None);
     }
 
     #[test]
@@ -244,17 +252,17 @@ mod test {
     fn check_dice_roll() {
         let mut rng = rng(Dice::D10, 0);
 
-        assert_eq!(Dice::D10.roll(&mut rng), 0);
         assert_eq!(Dice::D10.roll(&mut rng), 1);
         assert_eq!(Dice::D10.roll(&mut rng), 2);
         assert_eq!(Dice::D10.roll(&mut rng), 3);
         assert_eq!(Dice::D10.roll(&mut rng), 4);
+        assert_eq!(Dice::D10.roll(&mut rng), 5);
     }
 
     #[test]
     fn check_die_rolls() {
         let mut rng = rng(Dice::D100, 0);
 
-        assert_eq!(Die::new(Dice::D100, 5).roll(&mut rng), vec![0, 1, 2, 3, 4]);
+        assert_eq!(Die::new(Dice::D100, 5).roll(&mut rng), vec![1, 2, 3, 4, 5]);
     }
 }
