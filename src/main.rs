@@ -12,7 +12,7 @@ use {
 fn main() -> Result<()> {
     let mut rng = thread_rng();
 
-    let (die, behaviour) = RollParser::foo("20d10r1")?;
+    let (die, behaviour) = RollParser::roll("20d10r1")?;
 
     let mut roll = Roll::from_roll(&die, &mut rng);
 

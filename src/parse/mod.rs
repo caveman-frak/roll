@@ -10,7 +10,7 @@ use {
 pub struct RollParser {}
 
 impl RollParser {
-    pub fn foo(s: &str) -> Result<(Die, Vec<Behaviour>)> {
+    pub fn roll(s: &str) -> Result<(Die, Vec<Behaviour>)> {
         let mut roll = RollParser::parse(Rule::roll, s)?;
         let mut die: Option<Die> = None;
         let mut behaviours: Vec<Behaviour> = Vec::new();

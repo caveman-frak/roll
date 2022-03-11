@@ -1,11 +1,11 @@
 use {
     crate::{
-        dice::Dice,
+        dice::{Bounded, Dice},
         roll::value::{Action, ExType, Value},
     },
     anyhow::{anyhow, Error, Result},
     rand::RngCore,
-    std::{iter::Iterator, ops::RangeInclusive, str::FromStr},
+    std::{iter::Iterator, ops::RangeBounds, str::FromStr},
 };
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -22,9 +22,9 @@ pub enum DiscardType {
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
 pub enum Behaviour {
-    Reroll(Option<i8>, bool),
-    Explode(Option<i8>, ExType),
-    Critical(Option<i8>, Option<i8>),
+    Reroll(Option<Bounded>, bool),
+    Explode(Option<Bounded>, ExType),
+    Critical(Option<Bounded>, Option<Bounded>),
     Keep(usize, DiscardDirection),
     Drop(usize, DiscardDirection),
 }
@@ -66,26 +66,22 @@ impl Behaviour {
         values
     }
 
-    fn failure(dice: &Dice, point: &Option<i8>) -> Option<RangeInclusive<i8>> {
-        point
-            .map(|p| *dice.faces().start()..=p)
-            .or_else(|| dice.start())
+    fn failure(dice: &Dice, point: Option<Bounded>) -> Option<Bounded> {
+        point.or_else(|| dice.start())
     }
 
-    fn success(dice: &Dice, point: &Option<i8>) -> Option<RangeInclusive<i8>> {
-        point
-            .map(|p| p..=*dice.faces().end())
-            .or_else(|| dice.end())
+    fn success(dice: &Dice, point: Option<Bounded>) -> Option<Bounded> {
+        point.or_else(|| dice.end())
     }
 
     fn apply_reroll(
-        point: Option<i8>,
+        point: Option<Bounded>,
         repeat: bool,
         dice: &Dice,
         values: Vec<Value>,
         rng: &mut dyn RngCore,
     ) -> Vec<Value> {
-        if let Some(range) = Self::failure(dice, &point) {
+        if let Some(range) = Self::failure(dice, point) {
             let mut result = Vec::new();
             for value in values {
                 let mut v = value;
@@ -104,20 +100,20 @@ impl Behaviour {
     }
 
     fn apply_critical(
-        failure: Option<i8>,
-        success: Option<i8>,
+        failure: Option<Bounded>,
+        success: Option<Bounded>,
         dice: &Dice,
         values: Vec<Value>,
     ) -> Vec<Value> {
+        let failure = Self::failure(dice, failure);
+        let success = Self::success(dice, success);
         let mut result = Vec::new();
         for value in values {
-            result.push(
-                match (Self::failure(dice, &failure), Self::success(dice, &success)) {
-                    (Some(v), _) if v.contains(&value.value()) => value.add(Action::Failure),
-                    (_, Some(v)) if v.contains(&value.value()) => value.add(Action::Success),
-                    _ => value,
-                },
-            );
+            result.push(match (&failure, &success) {
+                (Some(v), _) if v.contains(&value.value()) => value.add(Action::Failure),
+                (_, Some(v)) if v.contains(&value.value()) => value.add(Action::Success),
+                _ => value,
+            });
         }
         result
     }
@@ -154,13 +150,13 @@ impl Behaviour {
     }
 
     fn apply_explode(
-        point: Option<i8>,
+        point: Option<Bounded>,
         explode: ExType,
         dice: &Dice,
         values: Vec<Value>,
         rng: &mut dyn RngCore,
     ) -> Vec<Value> {
-        if let Some(range) = Self::success(dice, &point) {
+        if let Some(range) = Self::success(dice, point) {
             let mut result = Vec::new();
             for value in values {
                 let mut first = true;
@@ -194,7 +190,11 @@ impl Behaviour {
     }
 
     fn parse_reroll(s: &str) -> Result<Behaviour> {
-        let point = if s.is_empty() { None } else { Some(s.parse()?) };
+        let point = if s.is_empty() {
+            None
+        } else {
+            Some(Bounded::range_to(s.parse()?))
+        };
         Ok(Behaviour::Reroll(point, true))
     }
 
@@ -202,12 +202,12 @@ impl Behaviour {
         if s.is_empty() {
             Ok(Behaviour::Explode(None, ExType::Standard))
         } else {
-            let (point, extype) = match &s[..1] {
+            let (range, extype) = match &s[..1] {
                 "!" => (
                     if s[1..].is_empty() {
                         None
                     } else {
-                        Some(s[1..].parse()?)
+                        Some(Bounded::range_from(s[1..].parse()?))
                     },
                     ExType::Compound,
                 ),
@@ -215,14 +215,14 @@ impl Behaviour {
                     if s[1..].is_empty() {
                         None
                     } else {
-                        Some(s[1..].parse()?)
+                        Some(Bounded::range_from(s[1..].parse()?))
                     },
                     ExType::Penetrating,
                 ),
                 "" => (None, ExType::Standard),
-                _ => (Some(s.parse()?), ExType::Standard),
+                _ => (Some(Bounded::range_from(s.parse()?)), ExType::Standard),
             };
-            Ok(Behaviour::Explode(point, extype))
+            Ok(Behaviour::Explode(range, extype))
         }
     }
 
@@ -233,14 +233,14 @@ impl Behaviour {
                 if s[1..].is_empty() {
                     None
                 } else {
-                    Some(s[1..].parse()?)
+                    Some(Bounded::range_from(s[1..].parse()?))
                 },
             )),
             "f" => Ok(Behaviour::Critical(
                 if s[1..].is_empty() {
                     None
                 } else {
-                    Some(s[1..].parse()?)
+                    Some(Bounded::range_to(s[1..].parse()?))
                 },
                 None,
             )),
@@ -312,7 +312,12 @@ mod test {
     fn check_apply_critical_override() {
         let values = values(vec![1, 2, 3, 4, 5, 6]);
 
-        let result = Behaviour::apply_critical(Some(2), Some(5), &Dice::D6, values);
+        let result = Behaviour::apply_critical(
+            Some(Bounded::from_range(..=2)),
+            Some(Bounded::from_range(5..)),
+            &Dice::D6,
+            values,
+        );
 
         assert_eq!(
             action(&result),
@@ -554,7 +559,7 @@ mod test {
     #[test]
     fn check_behaviour_ordering() {
         let mut v = vec![
-            Behaviour::Reroll(Some(1), true),
+            Behaviour::Reroll(Some(Bounded::from_range(..1)), true),
             Behaviour::Critical(None, None),
             Behaviour::Drop(1, DiscardDirection::Low),
             Behaviour::Explode(None, ExType::Penetrating),
@@ -567,7 +572,7 @@ mod test {
             v,
             vec![
                 Behaviour::Reroll(None, false),
-                Behaviour::Reroll(Some(1), true),
+                Behaviour::Reroll(Some(Bounded::from_range(..1)), true),
                 Behaviour::Explode(None, ExType::Penetrating),
                 Behaviour::Critical(None, None),
                 Behaviour::Keep(2, DiscardDirection::High),
@@ -633,8 +638,8 @@ mod test {
     fn check_parse_reroll() -> Result<()> {
         assert_eq!(Behaviour::from_str("r")?, Behaviour::Reroll(None, true));
         assert_eq!(
-            Behaviour::from_str("r20")?,
-            Behaviour::Reroll(Some(20), true)
+            Behaviour::from_str("r2")?,
+            Behaviour::Reroll(Some(Bounded::from_range(..=2)), true)
         );
         assert!(matches!(Behaviour::from_str("rq"), Err(_)));
 
@@ -651,7 +656,7 @@ mod test {
         println!("!2");
         assert_eq!(
             Behaviour::from_str("!2")?,
-            Behaviour::Explode(Some(2), ExType::Standard)
+            Behaviour::Explode(Some(Bounded::from_range(2..)), ExType::Standard)
         );
         println!("!!");
         assert_eq!(
@@ -661,7 +666,7 @@ mod test {
         println!("!!2");
         assert_eq!(
             Behaviour::from_str("!!2")?,
-            Behaviour::Explode(Some(2), ExType::Compound)
+            Behaviour::Explode(Some(Bounded::from_range(2..)), ExType::Compound)
         );
         println!("!p");
         assert_eq!(
@@ -671,7 +676,7 @@ mod test {
         println!("!p2");
         assert_eq!(
             Behaviour::from_str("!p2")?,
-            Behaviour::Explode(Some(2), ExType::Penetrating)
+            Behaviour::Explode(Some(Bounded::from_range(2..)), ExType::Penetrating)
         );
         println!("!q");
         // assert!(matches!(Behaviour::from_str("!q"), Err(_)));
@@ -684,12 +689,12 @@ mod test {
         assert_eq!(Behaviour::from_str("cs")?, Behaviour::Critical(None, None));
         assert_eq!(
             Behaviour::from_str("cs2")?,
-            Behaviour::Critical(None, Some(2))
+            Behaviour::Critical(None, Some(Bounded::from_range(2..)))
         );
         assert_eq!(Behaviour::from_str("cf")?, Behaviour::Critical(None, None));
         assert_eq!(
             Behaviour::from_str("cf2")?,
-            Behaviour::Critical(Some(2), None)
+            Behaviour::Critical(Some(Bounded::from_range(..=2)), None)
         );
         assert!(matches!(Behaviour::from_str("c"), Err(_)));
         assert!(matches!(Behaviour::from_str("cq"), Err(_)));
