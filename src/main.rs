@@ -1,34 +1,24 @@
 mod dice;
 mod mock;
+mod parse;
 mod roll;
 
 use {
-    crate::{
-        dice::{Dice, Die},
-        roll::{
-            behaviour::{Behaviour, DiscardDirection},
-            value::ExType,
-            Roll,
-        },
-    },
+    crate::{parse::RollParser, roll::Roll},
+    anyhow::Result,
     rand::thread_rng,
 };
 
-fn main() {
+fn main() -> Result<()> {
     let mut rng = thread_rng();
-    for _ in 0..10 {
-        println!(
-            "{} ",
-            Roll::from_roll(&Die::new(Dice::D10, 10), &mut rng).apply(
-                vec![
-                    // Behaviour::Reroll(None, false),
-                    // Behaviour::Explode(None, ExType::Standard),
-                    Behaviour::Critical(None, None),
-                    Behaviour::Drop(2, DiscardDirection::Low),
-                ],
-                &mut rng
-            )
-        );
-    }
-    println!();
+
+    let (die, behaviour) = RollParser::foo("20d10r1")?;
+
+    let mut roll = Roll::from_roll(&die, &mut rng);
+
+    roll.apply(behaviour, &mut rng);
+
+    println!("{}", roll);
+
+    Ok(())
 }

@@ -1,6 +1,7 @@
 use {
     crate::dice::Dice,
-    colored::{ColoredString, Colorize},
+    colored::Colorize,
+    joinery::{separators::Space, JoinableIterator},
     std::fmt::{self, Display},
 };
 
@@ -54,25 +55,99 @@ impl Value {
     }
 
     pub fn text(&self, dice: &Dice) -> String {
-        self.format_actions(dice.text(self.value())).to_string()
+        self.format_text(dice.text(self.value()))
     }
 
-    fn format_actions(&self, text: String) -> ColoredString {
+    fn format_text(&self, text: String) -> String {
+        let mut modifiers = (false, false, false, false, false);
+        let mut reroll = Vec::new();
+        let mut explode = Vec::new();
         let mut text = text.normal();
-        if self.actions().contains(&Action::Discard) {
-            text = text.strikethrough().dimmed()
+
+        for action in self.actions() {
+            match action {
+                Action::Discard => modifiers.0 = true,
+                Action::Failure => modifiers.1 = true,
+                Action::Success => modifiers.2 = true,
+                Action::Explode(value, _) => {
+                    modifiers.3 = true;
+                    explode.push(value);
+                }
+                Action::Reroll(value) => {
+                    modifiers.4 = true;
+                    reroll.push(value);
+                }
+            }
         }
-        if self.actions().contains(&Action::Failure) {
-            text = text.red()
-        } else if self.actions().contains(&Action::Success) {
-            text = text.green()
+
+        let pre = if reroll.is_empty() {
+            "".normal()
+        } else {
+            format!(
+                "({})",
+                reroll
+                    .iter()
+                    .map(|v| v.to_string().strikethrough())
+                    .join_with(Space)
+            )
+            .dimmed()
+        };
+        let post = if explode.is_empty() {
+            "".to_string()
+        } else {
+            format!(
+                "({})",
+                explode
+                    .iter()
+                    .map(|v| v.to_string().bold())
+                    .join_with(Space)
+            )
+        };
+
+        if modifiers.0 {
+            // discard
+            text = text.strikethrough();
         }
-        text
+        if modifiers.1 {
+            //failure
+            text = text.red();
+        } else if modifiers.2 {
+            //success
+            text = text.green();
+        }
+        if modifiers.3 {
+            // exploded
+            text = text.green().bold();
+        } else if modifiers.4 {
+            // rerolled
+        }
+        format!("{}{}{}", pre, text, post)
     }
 }
 
 impl Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.format_actions(self.value().to_string()))
+        write!(f, "{}", self.format_text(self.value().to_string()))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+
+    pub(crate) fn values(values: Vec<i8>) -> Vec<Value> {
+        values.iter().map(|v| Value::new(*v)).collect()
+    }
+
+    pub(crate) fn action<'a>(values: &'a Vec<Value>) -> Vec<Option<Action>> {
+        values
+            .iter()
+            .filter(|v| v.actions().len() < 2)
+            .map(|v| v.actions().get(0).map(|v| *v).or(None))
+            .collect()
+    }
+
+    pub(crate) fn actions<'a>(values: &'a Vec<Value>) -> Vec<Vec<Action>> {
+        values.iter().map(|v| v.actions().clone()).collect()
     }
 }

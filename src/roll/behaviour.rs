@@ -3,8 +3,9 @@ use {
         dice::Dice,
         roll::value::{Action, ExType, Value},
     },
+    anyhow::{anyhow, Error, Result},
     rand::RngCore,
-    std::{iter::Iterator, ops::RangeInclusive},
+    std::{iter::Iterator, ops::RangeInclusive, str::FromStr},
 };
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -191,11 +192,102 @@ impl Behaviour {
             values
         }
     }
+
+    fn parse_reroll(s: &str) -> Result<Behaviour> {
+        let point = if s.is_empty() { None } else { Some(s.parse()?) };
+        Ok(Behaviour::Reroll(point, true))
+    }
+
+    fn parse_explode(s: &str) -> Result<Behaviour> {
+        if s.is_empty() {
+            Ok(Behaviour::Explode(None, ExType::Standard))
+        } else {
+            let (point, extype) = match &s[..1] {
+                "!" => (
+                    if s[1..].is_empty() {
+                        None
+                    } else {
+                        Some(s[1..].parse()?)
+                    },
+                    ExType::Compound,
+                ),
+                "p" => (
+                    if s[1..].is_empty() {
+                        None
+                    } else {
+                        Some(s[1..].parse()?)
+                    },
+                    ExType::Penetrating,
+                ),
+                "" => (None, ExType::Standard),
+                _ => (Some(s.parse()?), ExType::Standard),
+            };
+            Ok(Behaviour::Explode(point, extype))
+        }
+    }
+
+    fn parse_critical(s: &str) -> Result<Behaviour> {
+        match &s[..1] {
+            "s" => Ok(Behaviour::Critical(
+                None,
+                if s[1..].is_empty() {
+                    None
+                } else {
+                    Some(s[1..].parse()?)
+                },
+            )),
+            "f" => Ok(Behaviour::Critical(
+                if s[1..].is_empty() {
+                    None
+                } else {
+                    Some(s[1..].parse()?)
+                },
+                None,
+            )),
+            _ => Err(anyhow!("Unable to parse Critical Behaviour '{}'", s)),
+        }
+    }
+
+    fn parse_keep(s: &str) -> Result<Behaviour> {
+        let (number, direction) = match &s[..1] {
+            "h" => (s[1..].parse()?, DiscardDirection::High),
+            "l" => (s[1..].parse()?, DiscardDirection::Low),
+            _ => (s.parse()?, DiscardDirection::High),
+        };
+        Ok(Behaviour::Keep(number, direction))
+    }
+
+    fn parse_drop(s: &str) -> Result<Behaviour> {
+        let (number, direction) = match &s[..1] {
+            "h" => (s[1..].parse()?, DiscardDirection::High),
+            "l" => (s[1..].parse()?, DiscardDirection::Low),
+            _ => (s.parse()?, DiscardDirection::Low),
+        };
+        Ok(Behaviour::Drop(number, direction))
+    }
+}
+
+impl FromStr for Behaviour {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Behaviour> {
+        match &s[..1] {
+            "r" => Ok(Self::parse_reroll(&s[1..])?),
+            "!" => Ok(Self::parse_explode(&s[1..])?),
+            "c" if s.len() > 1 => Ok(Self::parse_critical(&s[1..])?),
+            "k" => Ok(Self::parse_keep(&s[1..])?),
+            "d" => Ok(Self::parse_drop(&s[1..])?),
+            _ => Err(anyhow!("Unable to parse {} as Behaviour", s)),
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use {super::*, crate::mock::rng::*};
+    use {
+        super::*,
+        crate::{mock::rng::*, roll::value::test::*},
+    };
 
     #[test]
     fn check_apply_critical() {
@@ -537,19 +629,109 @@ mod test {
         );
     }
 
-    fn values(values: Vec<i8>) -> Vec<Value> {
-        values.iter().map(|v| Value::new(*v)).collect()
+    #[test]
+    fn check_parse_reroll() -> Result<()> {
+        assert_eq!(Behaviour::from_str("r")?, Behaviour::Reroll(None, true));
+        assert_eq!(
+            Behaviour::from_str("r20")?,
+            Behaviour::Reroll(Some(20), true)
+        );
+        assert!(matches!(Behaviour::from_str("rq"), Err(_)));
+
+        Ok(())
     }
 
-    fn action<'a>(values: &'a Vec<Value>) -> Vec<Option<Action>> {
-        values
-            .iter()
-            .filter(|v| v.actions().len() < 2)
-            .map(|v| v.actions().get(0).map(|v| *v).or(None))
-            .collect()
+    #[test]
+    fn check_parse_explode() -> Result<()> {
+        println!("!");
+        assert_eq!(
+            Behaviour::from_str("!")?,
+            Behaviour::Explode(None, ExType::Standard)
+        );
+        println!("!2");
+        assert_eq!(
+            Behaviour::from_str("!2")?,
+            Behaviour::Explode(Some(2), ExType::Standard)
+        );
+        println!("!!");
+        assert_eq!(
+            Behaviour::from_str("!!")?,
+            Behaviour::Explode(None, ExType::Compound)
+        );
+        println!("!!2");
+        assert_eq!(
+            Behaviour::from_str("!!2")?,
+            Behaviour::Explode(Some(2), ExType::Compound)
+        );
+        println!("!p");
+        assert_eq!(
+            Behaviour::from_str("!p")?,
+            Behaviour::Explode(None, ExType::Penetrating)
+        );
+        println!("!p2");
+        assert_eq!(
+            Behaviour::from_str("!p2")?,
+            Behaviour::Explode(Some(2), ExType::Penetrating)
+        );
+        println!("!q");
+        // assert!(matches!(Behaviour::from_str("!q"), Err(_)));
+
+        Ok(())
     }
 
-    fn actions<'a>(values: &'a Vec<Value>) -> Vec<Vec<Action>> {
-        values.iter().map(|v| v.actions().clone()).collect()
+    #[test]
+    fn check_parse_critical() -> Result<()> {
+        assert_eq!(Behaviour::from_str("cs")?, Behaviour::Critical(None, None));
+        assert_eq!(
+            Behaviour::from_str("cs2")?,
+            Behaviour::Critical(None, Some(2))
+        );
+        assert_eq!(Behaviour::from_str("cf")?, Behaviour::Critical(None, None));
+        assert_eq!(
+            Behaviour::from_str("cf2")?,
+            Behaviour::Critical(Some(2), None)
+        );
+        assert!(matches!(Behaviour::from_str("c"), Err(_)));
+        assert!(matches!(Behaviour::from_str("cq"), Err(_)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_parse_keep() -> Result<()> {
+        assert_eq!(
+            Behaviour::from_str("k1")?,
+            Behaviour::Keep(1, DiscardDirection::High)
+        );
+        assert_eq!(
+            Behaviour::from_str("kh1")?,
+            Behaviour::Keep(1, DiscardDirection::High)
+        );
+        assert_eq!(
+            Behaviour::from_str("kl1")?,
+            Behaviour::Keep(1, DiscardDirection::Low)
+        );
+        assert!(matches!(Behaviour::from_str("kq"), Err(_)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_parse_drop() -> Result<()> {
+        assert_eq!(
+            Behaviour::from_str("d1")?,
+            Behaviour::Drop(1, DiscardDirection::Low)
+        );
+        assert_eq!(
+            Behaviour::from_str("dh1")?,
+            Behaviour::Drop(1, DiscardDirection::High)
+        );
+        assert_eq!(
+            Behaviour::from_str("dl1")?,
+            Behaviour::Drop(1, DiscardDirection::Low)
+        );
+        assert!(matches!(Behaviour::from_str("dq"), Err(_)));
+
+        Ok(())
     }
 }

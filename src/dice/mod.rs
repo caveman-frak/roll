@@ -1,6 +1,6 @@
 use rand::{distributions::Uniform, Rng, RngCore};
 use {
-    anyhow::{Error, Result},
+    anyhow::{anyhow, Error, Result},
     std::{
         fmt::{self, Display},
         ops::RangeInclusive,
@@ -95,6 +95,16 @@ impl Dice {
     pub fn roll(&self, rng: &mut dyn RngCore) -> i8 {
         rng.gen_range(self.faces())
     }
+
+    fn parse_other(s: &str) -> Result<Dice> {
+        let mut parts = s.split(':');
+        match (parts.next(), parts.next()) {
+            (Some(end), None) => Ok(Dice::Other(1, end.parse()?)),
+            (Some(""), Some(end)) => Ok(Dice::Other(1, end.parse()?)),
+            (Some(start), Some(end)) => Ok(Dice::Other(start.parse()?, end.parse()?)),
+            _ => Err(anyhow!("Unable to parse {}", s)),
+        }
+    }
 }
 
 impl FromStr for Dice {
@@ -115,7 +125,7 @@ impl FromStr for Dice {
             "%" => Ok(Dice::D00),
             "Fate" => Ok(Dice::Fate),
             "F" => Ok(Dice::Fate),
-            _ => Ok(Dice::Other(1, s.parse()?)),
+            _ => Self::parse_other(s),
         }
     }
 }
@@ -123,7 +133,8 @@ impl FromStr for Dice {
 impl Display for Dice {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Dice::Other(_, end) => write!(f, "D{}", end),
+            Dice::Other(1, end) => write!(f, "D{}", end),
+            Dice::Other(start, end) => write!(f, "D{}:{}", start, end),
             _ => write!(
                 f,
                 "{}",
@@ -206,8 +217,9 @@ mod test {
         assert_eq!("F".parse::<Dice>()?, Dice::Fate);
         assert_eq!("Fate".parse::<Dice>()?, Dice::Fate);
 
-        assert!(matches!("1".parse::<Dice>()?, Dice::Other(1, 1)));
-        assert!(matches!("5".parse::<Dice>()?, Dice::Other(1, 5)));
+        assert!(matches!("7".parse::<Dice>()?, Dice::Other(1, 7)));
+        assert!(matches!(":7".parse::<Dice>()?, Dice::Other(1, 7)));
+        assert!(matches!("2:7".parse::<Dice>()?, Dice::Other(2, 7)));
 
         assert!(matches!("S".parse::<Dice>(), Err(_)));
 

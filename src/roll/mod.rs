@@ -1,4 +1,5 @@
 pub mod behaviour;
+pub mod outcome;
 pub mod value;
 
 use {
