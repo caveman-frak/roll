@@ -1,6 +1,6 @@
 use {
     crate::{
-        dice::{Bounded, Dice},
+        dice::{bound::Bounded, Dice},
         roll::value::{Action, ExType, Value},
     },
     anyhow::{anyhow, Error, Result},
@@ -135,6 +135,7 @@ impl Behaviour {
         } else {
             numbers[number..].to_vec()
         };
+        discards.sort_unstable();
         let mut results = Vec::new();
         for value in values {
             results.push(if value.actions().contains(&Action::Discard) {
@@ -203,7 +204,7 @@ impl Behaviour {
             Ok(Behaviour::Explode(None, ExType::Standard))
         } else {
             let (range, extype) = match &s[..1] {
-                "!" => (
+                "!" | "c" => (
                     if s[1..].is_empty() {
                         None
                     } else {
@@ -273,7 +274,7 @@ impl FromStr for Behaviour {
     fn from_str(s: &str) -> Result<Behaviour> {
         match &s[..1] {
             "r" => Ok(Self::parse_reroll(&s[1..])?),
-            "!" => Ok(Self::parse_explode(&s[1..])?),
+            "!" | "x" => Ok(Self::parse_explode(&s[1..])?),
             "c" if s.len() > 1 => Ok(Self::parse_critical(&s[1..])?),
             "k" => Ok(Self::parse_keep(&s[1..])?),
             "d" => Ok(Self::parse_drop(&s[1..])?),

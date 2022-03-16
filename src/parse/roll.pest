@@ -4,7 +4,7 @@ die = { ASCII_DIGIT* ~ dice }
 
 compare = _{ ( ">" | "<" )? ~ ASCII_DIGIT* }
 reroll = { ^"r" ~ compare }
-explode = { "!" ~ ( "!" | ^"p" )? ~ compare }
+explode = { ("!" | ^"x" ) ~ ( "!" | ^"c" | ^"p" )? ~ compare }
 discard = { ( ^"d" | ^"k" ) ~ ( ^"h" | ^"l" )? ~ compare }
 critical = { ^"c" ~ ( ^"s" | ^"f" )? ~ compare }
 behaviours = _{ ( reroll | explode | discard | critical )* }

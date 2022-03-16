@@ -106,7 +106,7 @@ impl Value {
 
         if modifiers.0 {
             // discard
-            text = text.strikethrough();
+            text = text.strikethrough().dimmed();
         }
         if modifiers.1 {
             //failure
