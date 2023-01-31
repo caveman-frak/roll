@@ -1,6 +1,6 @@
 use std::{
     cmp::{Ord, Ordering, PartialOrd},
-    fmt::{self, Debug},
+    fmt::{self, Debug, Display},
     ops::{Bound, RangeBounds},
 };
 
@@ -33,6 +33,24 @@ impl Bounded {
 
     fn new(start: Bound<i8>, end: Bound<i8>) -> Self {
         Self { start, end }
+    }
+
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            fmt,
+            "{}..{}",
+            match self.start {
+                Bound::Included(value) | Bound::Excluded(value) => value.to_string(),
+                Bound::Unbounded => String::from(""),
+            },
+            match self.end {
+                Bound::Included(value) => format!("={}", value),
+                Bound::Excluded(value) => value.to_string(),
+                Bound::Unbounded => String::from(""),
+            }
+        )?;
+
+        Ok(())
     }
 
     fn cmp_bound(this: &Bound<i8>, that: &Bound<i8>) -> Ordering {
@@ -85,21 +103,13 @@ impl PartialOrd for Bounded {
 
 impl Debug for Bounded {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            fmt,
-            "{}..{}",
-            match self.start {
-                Bound::Included(value) | Bound::Excluded(value) => value.to_string(),
-                Bound::Unbounded => String::from(""),
-            },
-            match self.end {
-                Bound::Included(value) => format!("={}", value),
-                Bound::Excluded(value) => value.to_string(),
-                Bound::Unbounded => String::from(""),
-            }
-        )?;
+        self.fmt(fmt)
+    }
+}
 
-        Ok(())
+impl Display for Bounded {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt(fmt) 
     }
 }
 
@@ -152,6 +162,26 @@ mod test {
         );
         assert_eq!(
             format!("{:?}", Bounded::new(Included(10), Excluded(20))),
+            "10..20"
+        );
+    }
+
+    #[test]
+    fn check_display() {
+        assert_eq!(format!("{}", Bounded::new(Unbounded, Unbounded)), "..");
+        assert_eq!(format!("{}", Bounded::new(Included(10), Unbounded)), "10..");
+        assert_eq!(format!("{}", Bounded::new(Excluded(10), Unbounded)), "10..");
+        assert_eq!(
+            format!("{}", Bounded::new(Unbounded, Included(20))),
+            "..=20"
+        );
+        assert_eq!(format!("{}", Bounded::new(Unbounded, Excluded(20))), "..20");
+        assert_eq!(
+            format!("{}", Bounded::new(Included(10), Included(20))),
+            "10..=20"
+        );
+        assert_eq!(
+            format!("{}", Bounded::new(Included(10), Excluded(20))),
             "10..20"
         );
     }
